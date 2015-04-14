@@ -5,6 +5,8 @@
 # Purpose:
 #    To submit and update targets for the Spizter Microlensing program to the 
 #    online observing program coordination system.  
+# Author:
+#    Rachel Street @ LCOGT
 ###############################################################################
 
 ###############################
