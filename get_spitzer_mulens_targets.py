@@ -17,6 +17,7 @@ from urllib import urlencode
 import urllib2
 import cookielib
 import getpass
+import target_class
 
 ###############################
 # DECLARED STATEMENTS
@@ -28,12 +29,15 @@ coordination system.
 
 Operation:
     From the commandline, type:
-    > python get_spitzer_mulens_targets.py [options] [path-to-input-file]
+    > python get_spitzer_mulens_targets.py [options] 
 
 Inputs (all optional): 
    -help      Displays this help text
    -version   Displays the version string
-   -file      Requires a second argument giving a path to the output file to be written.
+   -file [path-to-input-file] Requires a second argument giving a path to the output file to be written.
+   -user [ID] -pass [code]  Requires both -user and -pass arguments to be given, followed by
+              the respective access codes.  These will be prompted for if not given. 
+   -targets-only  Returns only the target dictionary, no other output. 
 
 Modes:
    This program queries the online Spitzer Microlensing portal for the up-to-date target list.
@@ -42,21 +46,39 @@ Modes:
    the file path given.  
 '''
 
-version = 'get_spitzer_mulens_targets_v1.0'
+version = 'get_spitzer_mulens_targets_v1.1'
 
 #################################
 # FUNCTION REQUEST TARGET LIST
-def request_target_list(file_path=None):
+def request_target_list(params):
     '''Function to request the up to date Spitzer microlensing target list from the online
-    portal.'''
+    portal.
+    
+    This function requires the following parameter input dictionary:
+    params = { 'userID': <given or prompted for>,
+               'password': <given or prompted for>,
+               'output_file': <file path, optional>,
+	       'targets-only': {True,False, Default: False} }
+    
+    If calling this function from another Python code, setting targets-only=True will 
+    suppress all other screen or file output and return only the dictionary of targets of the
+    form:
+    targets = { target_name1: target_object1, 
+                target_name2: target_object2, ...
+	      }
+    Each object is an instance of the MulensTarget class. 
+    '''
+    
+    # Initialize targets dictionary, returned in all cases:
+    targets = {}
     
     # URL of submission page:
     url = 'http://robonet.lcogt.net/cgi-bin/private/cgiwrap/robouser/spitzer_target_list.cgi'
     
-    # Compose authentication details:
-    userID = raw_input('Username: ')
-    password = getpass.getpass('Password: ')
-    values = { 'username' : userID, 'password': password }
+    # Compose authentication details if not already available:
+    if params['userID'] == None: params['userID'] = raw_input('Username: ')
+    if params['password'] == None: params['password'] = getpass.getpass('Password: ')
+    values = { 'username' : params['userID'], 'password': params['password'] }
     data = urlencode(values)
     
     # Build the password manager.  Yes, this uses urllib2 rather than requests
@@ -64,7 +86,7 @@ def request_target_list(file_path=None):
     # requests isn't yet part of their system python, and to avoid having 
     # any dependencies if possible:
     pswd_mgr = urllib2.HTTPPasswordMgrWithDefaultRealm()
-    pswd_mgr.add_password(None, url, userID, password)
+    pswd_mgr.add_password(None, url, params['userID'], params['password'])
     handler = urllib2.HTTPBasicAuthHandler(pswd_mgr)
     opener = urllib2.build_opener(handler)
     
@@ -75,11 +97,11 @@ def request_target_list(file_path=None):
     except urllib2.HTTPError:
         print 'Problem logging into Spitzer microlensing observing portal'
 	exit()
-    print 'Logged into Spitzer microlensing observing portal '
+    #print 'Logged into Spitzer microlensing observing portal '
     
     # Compose the request to the target server - no parameters are required:
-    params = { }
-    data = urlencode(params)
+    url_params = { }
+    data = urlencode(url_params)
 	
     # Send the request to the online system and harvest the response:
     req = urllib2.Request(url,data)
@@ -87,15 +109,18 @@ def request_target_list(file_path=None):
     page_html = response.readlines()
     
     # Extract the ASCII target information from the returned page: 
-    target_data = parse_target_list_html(page_html)
+    targets = parse_target_list_html(page_html)
     
     # Output the returned data according to user instructions:
-    if file_path == None:
-        print target_data
-    else:
-        fileobj = open(file_path,'w')
-	fileobj.write(target_data)
+    if params['output_file'] == None and params['targets-only'] == False:
+        for target_name,target in targets.items(): print target.summary()
+	
+    elif params['output_file'] != None:
+        fileobj = open(params['output_file'],'w')
+	for target_name,target in targets.items(): fileobj.write(target.summary() + '\n')
 	fileobj.close()
+    
+    return targets
 
 #################################
 # PARSE THE TARGET LIST TABLE
@@ -128,7 +153,11 @@ def parse_target_list_html(page_html):
 	#entry = entry.lstrip()
 	
 	return entry
-	
+    
+    
+    # Initialise target dictionary:
+    targets = {}
+    
     # Loop over each line of the returned HTML table.  The start and end of the target list
     # is indicated by the tags >>>>START TARGET LIST '  ' <<<<END TARGET LIST'
     table_headers = ['']
@@ -162,43 +191,97 @@ def parse_target_list_html(page_html):
 	    else:
 	        if '<td>' in line and 'img src' not in line and 'form' not in line: 
 		    entry = parse_content_line(line)
-		    if len(entry) > 0: table_entries.append( entry )
-	
+		    if len(entry.replace(' ','').replace('\t','')) > 0: 
+		        target = target_class.MulensTarget()
+		        target.set_params(entry)
+		        targets[target.short_name] = target
+			
     # Compile the table data:
+    # Note this is now no longer returned; code may be removed anon. depending on how useage 
+    # develops. 
     table_data = ''
     for hdr in table_headers: table_data = table_data + '# ' + hdr + '\n'
     for entry in table_entries:  table_data = table_data + entry + '\n'
     
-    return table_data
+    return targets
+
+#################################
+# PARSE COMMANDLINE ARGUMENTS
+def parse_cl_args():
+    '''Function to parse and verify the arguments given at the commandline'''
+    
+    # Initialize all possible options:
+    params = { 'userID': None,
+               'password': None,
+               'output_file': None,
+	       'targets-only': False }
+
+    # First check for help or version, since these just result in screen output:
+    if '-help' in argv:
+        print help_text
+	exit()
+    if '-version' in argv:    
+        print version
+	exit()
+    
+    # Next search for user authentication, since this requires two arguments and
+    # needs to prompt for either one being missing:
+    if '-user' in argv:
+        i = argv.index('-user')
+	try: params['userID'] = argv[i+1]
+        except IndexError:
+	    print 'ERROR: missing username in argument list'
+	    exit()
+	    
+	try:
+	    i = argv.index('-pass')
+	    try: params['password'] = argv[i+1]
+            except IndexError:
+	        print 'ERROR: missing password in argument list'
+	        exit()
+        except ValueError:
+	    print 'ERROR: missing password in argument list'
+	    exit()
+	 
+    if '-pass' in argv:
+        i = argv.index('-pass')
+	try: params['password'] = argv[i+1]
+        except IndexError:
+	    print 'ERROR: missing password in argument list'
+	    exit()
+        
+	try:
+	    i = argv.index('-user')
+	    try: params['userID'] = argv[i+1]
+            except IndexError:
+	        print 'ERROR: missing username in argument list'
+	        exit()
+        except ValueError:
+	    print 'ERROR: missing username in argument list'
+	    exit()   
+
+    # Now check for an output file name:
+    if '-file' in argv:
+        i = argv.index('-file')
+	try:
+	     params['output_file'] = argv[i+1]
+        except IndexError:
+	    print 'ERROR: missing output filename in argument list'
+	    exit() 
+    
+    # ...and check for no output option (returns target dictionary only):
+    if '-targets-only' in argv: params['targets-only'] = True
+    
+    return params
     
 #################################
 # COMMANDLINE RUN SECTION
 if __name__ == '__main__':
     
-    # Parse commandline arguments:
-    # Case 1: help text is requested:
-    if len(argv) > 1 and str(argv[1]).lower() == '-help':
-        print help_text
-	exit()
+    # Parse commandline arguments. 
+    # This also handles the display of help and version text. 
+    params = parse_cl_args()
     
-    # Case 2: version string is requested:
-    elif len(argv) > 1 and str(argv[1]).lower() == '-version':
-        print version
-	exit()
-    
-    # Case 3: no arguments are given.  Query the Spitzer target list
-    # and output to screen:
-    elif len(argv) == 1:
-	request_target_list()
-
-    # Case 4: 2 arguments given: the first is the '-file' flag, the second is
-    # taken to be the file path:
-    elif len(argv) > 2 and str(argv[1]).lower() == '-file':
-        request_target_list(file_path=argv[2])
-
-    # Case 5: 1 arguments given: the first is the '-file' flag, but no filename is provided:
-    elif len(argv) == 2 and str(argv[1]).lower() == '-file':
-        print 'ERROR: No file path given for output'
-	exit()
-
+    # Query the Spitzer target list and output as requested:
+    target_dict = request_target_list(params)
     
