@@ -92,10 +92,9 @@ def request_target_list(params):
     
     # Install the opener:
     urllib2.install_opener(opener)
-    try: 
-        response = opener.open(url)
-    except urllib2.HTTPError:
-        print 'Problem logging into Spitzer microlensing observing portal'
+    try: response = opener.open(url)
+    except urllib2.HTTPError, error:
+        print 'Problem logging into Spitzer microlensing observing portal: ' + error.reason
 	exit()
     #print 'Logged into Spitzer microlensing observing portal '
     
@@ -105,7 +104,10 @@ def request_target_list(params):
 	
     # Send the request to the online system and harvest the response:
     req = urllib2.Request(url,data)
-    response = urllib2.urlopen(req)
+    try: response = urllib2.urlopen(req)
+    except urllib2.HTTPError, error:
+        print 'Problem fetching data from Spitzer microlensing observing portal: ' + error.reason
+	exit()
     page_html = response.readlines()
     
     # Extract the ASCII target information from the returned page: 
