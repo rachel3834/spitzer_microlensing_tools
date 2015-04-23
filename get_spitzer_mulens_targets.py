@@ -38,15 +38,20 @@ Inputs (all optional):
    -user [ID] -pass [code]  Requires both -user and -pass arguments to be given, followed by
               the respective access codes.  These will be prompted for if not given. 
    -targets-only  Returns only the target dictionary, no other output. 
+   -history  [file-path]  Records any successful targetlist query to local disk.  This file will be
+               overwritten by subsequent successful queries, but will be read back if a query fails.  
 
 Modes:
    This program queries the online Spitzer Microlensing portal for the up-to-date target list.
    If no arguments are given, the information will be printed to screen.  
    If the -file flag is used, the same output will be written to an ASCII text file at
    the file path given.  
+   If the -history flag is used, the target list output will be the online targetlist if it can be
+   queried successfully.  If for some reason this is unavailable, the data in the given file will be
+   returned as a fallback.  Any successful online query will cause this file to be updated.  
 '''
 
-version = 'get_spitzer_mulens_targets_v1.1'
+version = 'get_spitzer_mulens_targets_v1.2'
 
 #################################
 # FUNCTION REQUEST TARGET LIST
@@ -57,7 +62,8 @@ def request_target_list(params):
     This function requires the following parameter input dictionary:
     params = { 'userID': <given or prompted for>,
                'password': <given or prompted for>,
-               'output_file': <file path, optional>,
+               'output_file': <file path, None, optional>,
+               'history': <file path, None, optional>,
 	       'targets-only': {True,False, Default: False} }
     
     If calling this function from another Python code, setting targets-only=True will 
@@ -67,20 +73,53 @@ def request_target_list(params):
                 target_name2: target_object2, ...
 	      }
     Each object is an instance of the MulensTarget class. 
+    The function also returns the list user_info, which contains a list of information and/or error
+    messages in the sequence they occurred.  
     '''
     
-    # Initialize targets dictionary, returned in all cases:
+    # Initialize targets dictionary and message, returned in all cases:
     targets = {}
-    
-    # URL of submission page:
-    url = 'http://robonet.lcogt.net/cgi-bin/private/cgiwrap/robouser/spitzer_target_list.cgi'
-    
+    user_info = []
+        
     # Compose authentication details if not already available:
     if params['userID'] == None: params['userID'] = raw_input('Username: ')
     if params['password'] == None: params['password'] = getpass.getpass('Password: ')
     values = { 'username' : params['userID'], 'password': params['password'] }
     data = urlencode(values)
     
+    # First attempt to harvest the targetlist from the online portal. 
+    (targets, user_info, valid_targets) = fetch_online_targetlist(targets, user_info, params)
+    
+    # If the online query was unsuccessful, and the history option is not set, return
+    # empty handed:
+    if valid_targets == False and params['history'] == None:
+        return targets, user_info
+    
+    # If the online query was unsuccessful, and the history option is set, attempt to read
+    # the targetlist from local disk:
+    if valid_targets == False and params['history'] != None:
+        (targets, user_info, valid_targets) = read_local_target_list(targets,user_info,params)
+	
+    # Output the returned data according to user instructions:
+    if valid_targets == True:
+        if params['output_file'] == None and params['targets-only'] == False:
+            for target_name,target in targets.items(): print target.summary()
+        if params['output_file'] != None: output_local_target_list(targets,params['output_file'])
+        if params['history'] != None: output_local_target_list(targets,params['history'])
+    
+    return targets, user_info
+
+#################################
+# FETCH ONLINE TARGETLIST
+def fetch_online_targetlist(targets, user_info, params):
+    '''Function to harvest the target list from the online portal'''
+    
+    # Status flag, indicates success or failure of online query:
+    status = True
+    
+    # URL of submission page:
+    url = 'http://robonet.lcogt.net/cgi-bin/private/cgiwrap/robouser/spitzer_target_list.cgi'
+
     # Build the password manager.  Yes, this uses urllib2 rather than requests
     # This is to make the code as portable as possible for users for whom
     # requests isn't yet part of their system python, and to avoid having 
@@ -94,9 +133,10 @@ def request_target_list(params):
     urllib2.install_opener(opener)
     try: response = opener.open(url)
     except urllib2.HTTPError, error:
-        print 'Problem logging into Spitzer microlensing observing portal: ' + error.reason
-	exit()
-    #print 'Logged into Spitzer microlensing observing portal '
+        user_info.append('Problem logging into Spitzer microlensing observing portal: ' + error.reason)
+	status = False
+	return targets, user_info, status
+    user_info.append('Logged into Spitzer microlensing observing portal as '+str(params['userID']))
     
     # Compose the request to the target server - no parameters are required:
     url_params = { }
@@ -106,24 +146,60 @@ def request_target_list(params):
     req = urllib2.Request(url,data)
     try: response = urllib2.urlopen(req)
     except urllib2.HTTPError, error:
-        print 'Problem fetching data from Spitzer microlensing observing portal: ' + error.reason
-	exit()
+        user_info.append('Problem fetching data from Spitzer microlensing observing portal: ' + error.reason)
+	status = False
+	return targets, user_info, status
     page_html = response.readlines()
     
     # Extract the ASCII target information from the returned page: 
     targets = parse_target_list_html(page_html)
+    user_info.append('Source of targets: online targetlist')
     
-    # Output the returned data according to user instructions:
-    if params['output_file'] == None and params['targets-only'] == False:
-        for target_name,target in targets.items(): print target.summary()
-	
-    elif params['output_file'] != None:
-        fileobj = open(params['output_file'],'w')
-	for target_name,target in targets.items(): fileobj.write(target.summary() + '\n')
-	fileobj.close()
+    return targets, user_info, status
     
-    return targets
+#################################
+# OUTPUT TARGET LIST TO LOCAL FILE
+def output_local_target_list(targets,file_path):
+    '''Function to output the target dictionary to a file on local disk. 
+    This function will overwrite any existing file at file_path.
+    '''
+    
+    fileobj = open(file_path,'w')
+    for target_name,target in targets.items(): fileobj.write(target.summary() + '\n')
+    fileobj.close()
+    
 
+#################################
+# READ TARGET LIST FROM LOCAL FILE
+def read_local_target_list(targets,user_info,params):
+    '''This function returns a target dictionary read from an input file on local disk.'''
+    
+    # Initialise status:
+    status = True
+
+    # Check we can find the file:
+    if params['history'] == None:
+        user_info.append('ERROR: No history file specified')
+	status = False
+	return targets, user_info, status
+    if path.isfile(params['history']) == False:
+         user_info.append('ERROR: Cannot find local target file '+params['history'])
+	 status = False
+         return targets, user_info, status
+    
+    # Read and parse the input file:
+    fileobj = open(params['history'],'r')
+    file_lines = fileobj.readlines()
+    fileobj.close()
+    for line in file_lines:
+        if line.lstrip()[0:1] != '#':
+            target = target_class.MulensTarget()
+	    target.set_params(line)
+	    targets[target.short_name] = target
+    user_info.append('Source of targets: '+str(params['history']))
+    
+    return targets, user_info, status
+    
 #################################
 # PARSE THE TARGET LIST TABLE
 def parse_target_list_html(page_html):
@@ -216,7 +292,8 @@ def parse_cl_args():
     params = { 'userID': None,
                'password': None,
                'output_file': None,
-	       'targets-only': False }
+	       'targets-only': False,
+	       'history': None }
 
     # First check for help or version, since these just result in screen output:
     if '-help' in argv:
@@ -271,8 +348,18 @@ def parse_cl_args():
 	    print 'ERROR: missing output filename in argument list'
 	    exit() 
     
+    # Now check for an output file name:
+    if '-history' in argv:
+        i = argv.index('-history')
+	try:
+	     params['history'] = argv[i+1]
+        except IndexError:
+	    print 'ERROR: missing target list history filename in argument list'
+	    exit() 
+	    
     # ...and check for no output option (returns target dictionary only):
     if '-targets-only' in argv: params['targets-only'] = True
+    
     
     return params
     
@@ -285,5 +372,7 @@ if __name__ == '__main__':
     params = parse_cl_args()
     
     # Query the Spitzer target list and output as requested:
-    target_dict = request_target_list(params)
+    (target_dict, user_info) = request_target_list(params)
     
+    # Output info statements:
+    for line in user_info: print line
