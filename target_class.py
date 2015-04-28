@@ -57,7 +57,9 @@ class MulensTarget:
 	if len(entry_list) > 0:
 	    
             for i,key in enumerate(self.key_list):
-	    	if key in self.float_keys: setattr(self,key,float(entry_list[i]))
+	    	if key in self.float_keys: 
+		    if 'none' in str(entry_list[i]).lower(): setattr(self,key,0.0)
+		    else: setattr(self,key,float(entry_list[i]))
 	    	else: setattr(self,key,entry_list[i])
 	    	if key == 'short_name': self.name = swapname_public.swapname_public(short_name=self.short_name)
 
