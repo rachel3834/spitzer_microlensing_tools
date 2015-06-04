@@ -17,6 +17,12 @@ parameter dictionary.  For details, import the function into iPython and type
 request_target_list?
 The function returns a dictionary of objects of the MulensTarget class and a list of strings (user_info) which records the progress of the program and any error output.  
 
+* Calling update_observer_list.py from within Python
+
+update_observer_list.py can be imported into your own Python modeule, and the main  function can be called with a parameter dictionary.  As above, for more details import the function into iPython and type:
+update_observer_list?
+The function returns a user_info list of strings, as above.
+
 * -history
 
 This code will always attempt to query the online target list for the most up to date information.  
